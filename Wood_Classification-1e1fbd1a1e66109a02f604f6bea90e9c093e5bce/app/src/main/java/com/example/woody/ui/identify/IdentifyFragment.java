@@ -32,17 +32,15 @@ import androidx.navigation.Navigation;
 import com.example.woody.R;
 import com.example.woody.entity.Wood;
 import com.example.woody.ml.ConvertModelMobilenetv3244;
+import com.example.woody.ml.ModelCheckwood;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.firebase.database.ChildEventListener;
 import com.google.firebase.database.DataSnapshot;
 import com.google.firebase.database.DatabaseError;
 import com.google.firebase.database.DatabaseReference;
 import com.google.firebase.database.FirebaseDatabase;
-import com.google.firebase.database.ValueEventListener;
 import com.google.gson.Gson;
 
-import org.checkerframework.checker.units.qual.A;
-import org.checkerframework.checker.units.qual.C;
 import org.tensorflow.lite.DataType;
 import org.tensorflow.lite.support.tensorbuffer.TensorBuffer;
 
@@ -51,7 +49,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.ArrayList;
 import java.util.concurrent.Executor;
 
 
@@ -212,8 +209,6 @@ public class IdentifyFragment extends Fragment {
             @Override
             public void onCaptureSuccess(@NonNull ImageProxy image) {
                 super.onCaptureSuccess(image);
-                System.out.println(image.getWidth());
-                System.out.println(image.getHeight());
                 imageView.setVisibility(View.VISIBLE);
                 Bitmap bImage = RotateBitmap(toBitmap(image), 90);
                 imageView.setImageBitmap(bImage);
@@ -221,10 +216,46 @@ public class IdentifyFragment extends Fragment {
                 retakeBtn.setVisibility(View.VISIBLE);
                 identifyBtn.setVisibility(View.VISIBLE);
                 picSelected = bImage;
+                checkImageQuality(bImage);
 
                 image.close();
             }
         });
+    }
+
+    private void checkImageQuality(Bitmap image) {
+        try {
+            ModelCheckwood model = ModelCheckwood.newInstance(getContext());
+
+            // Creates inputs for reference.
+            TensorBuffer inputFeature0 = TensorBuffer.createFixedSize(new int[]{1, 224, 224, 3}, DataType.FLOAT32);
+            ByteBuffer b= convertBitmapToByteBuffer(image);
+            inputFeature0.loadBuffer(b);
+
+
+            // Runs model inference and gets result.
+            ModelCheckwood.Outputs outputs = model.process(inputFeature0);
+            TensorBuffer outputFeature0 = outputs.getOutputFeature0AsTensorBuffer();
+
+            // Runs model inference and gets result.
+
+            float[] confidences = outputFeature0.getFloatArray();
+
+            int maxPos = 0;
+            float maxConfidence = 0;
+            for (int i = 0; i < confidences.length; i++) {
+                if (confidences[i] > maxConfidence) {
+                    maxConfidence = confidences[i];
+                    maxPos = i;
+                }
+                System.out.println((i) + "tỉ lệ" + confidences[i]);
+
+            }
+            // Releases model resources if no longer used.
+            model.close();
+        } catch (IOException e) {
+            // TODO Handle the exception
+        }
     }
 
     private void classifyImage(Bitmap image, Context context) {
