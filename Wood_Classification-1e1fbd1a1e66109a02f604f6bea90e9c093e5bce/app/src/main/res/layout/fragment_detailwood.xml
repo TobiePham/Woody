@@ -60,6 +60,8 @@
             <org.imaginativeworld.whynotimagecarousel.ImageCarousel
                 android:id="@+id/imageView"
                 app:autoWidthFixing="true"
+                android:background="@drawable/border_imageview"
+                android:clipToOutline="true"
                 app:showTopShadow="false"
                 app:showBottomShadow="false"
                 android:layout_width="match_parent"

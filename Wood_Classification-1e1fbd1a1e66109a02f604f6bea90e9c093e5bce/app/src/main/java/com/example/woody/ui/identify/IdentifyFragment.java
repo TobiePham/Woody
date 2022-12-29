@@ -1,14 +1,23 @@
 package com.example.woody.ui.identify;
 
+
+import static androidx.core.content.ContextCompat.getSystemService;
+
+import android.app.AlertDialog;
+import android.content.DialogInterface;
+import android.content.res.AssetManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Bundle;
 
 import android.provider.MediaStore;
+import android.util.Base64;
 import android.util.Size;
 import android.view.LayoutInflater;
 
@@ -16,10 +25,13 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.ImageView;
+import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
@@ -30,9 +42,10 @@ import androidx.fragment.app.Fragment;
 import androidx.navigation.Navigation;
 
 import com.example.woody.R;
+import com.example.woody.api.ApiService;
 import com.example.woody.entity.Wood;
 import com.example.woody.ml.ConvertModelMobilenetv3244;
-import com.example.woody.ml.ModelCheckwood;
+import com.example.woody.ui.LoadingDialog;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.firebase.database.ChildEventListener;
 import com.google.firebase.database.DataSnapshot;
@@ -40,29 +53,44 @@ import com.google.firebase.database.DatabaseError;
 import com.google.firebase.database.DatabaseReference;
 import com.google.firebase.database.FirebaseDatabase;
 import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 
+import org.checkerframework.checker.units.qual.A;
 import org.tensorflow.lite.DataType;
 import org.tensorflow.lite.support.tensorbuffer.TensorBuffer;
 
+import java.io.ByteArrayOutputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Type;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.concurrent.Executor;
 
+import retrofit2.Call;
+import retrofit2.Callback;
+import retrofit2.Response;
 
-public class IdentifyFragment extends Fragment {
+
+public class IdentifyFragment extends Fragment{
     private Button captureBtn, retakeBtn, identifyBtn, libraryBtn;
     private ListenableFuture<ProcessCameraProvider> cameraProviderListenableFuture;
     private PreviewView previewView;
     private ImageCapture imageCapture;
+    private TextView predictText;
     private ImageView imageView;
     private int idDetected;
     private float percent;
     private Bitmap picSelected;
     private FirebaseDatabase database = FirebaseDatabase.getInstance("https://woody-5c79f-default-rtdb.asia-southeast1.firebasedatabase.app");
     private DatabaseReference myRef= database.getReference("Wood");
+    private boolean connectNetwork=false;
+    private ArrayList<Wood> dataOffline= new ArrayList<>();
+    private LoadingDialog loadingDialog;
+
     public View onCreateView(@NonNull LayoutInflater inflater,
                              ViewGroup container, Bundle savedInstanceState) {
 
@@ -72,8 +100,19 @@ public class IdentifyFragment extends Fragment {
         retakeBtn = view.findViewById(R.id.retake_button);
         identifyBtn = view.findViewById(R.id.cbtn);
         libraryBtn = view.findViewById(R.id.library_button);
+        predictText=view.findViewById(R.id.predict);
+        loadingDialog= new LoadingDialog(view.getContext());
 
-
+        ConnectivityManager connectivityManager = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        if(connectivityManager.getNetworkInfo(ConnectivityManager.TYPE_MOBILE).getState() == NetworkInfo.State.CONNECTED ||
+                connectivityManager.getNetworkInfo(ConnectivityManager.TYPE_WIFI).getState() == NetworkInfo.State.CONNECTED) {
+            //we are connected to a network
+            connectNetwork = true;
+        }
+        else{
+            connectNetwork = false;
+            getWoodOffline();
+        }
 
 
         captureBtn.setOnClickListener(new View.OnClickListener() {
@@ -92,9 +131,20 @@ public class IdentifyFragment extends Fragment {
         identifyBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                classifyImage(picSelected, view.getContext());
-                //Firebase get infor
-                getWoodFromFirebase(idDetected,view);
+              Bitmap bImage = RotateBitmap(picSelected, 90);
+              classifyImage(bImage,view.getContext());
+              if(!connectNetwork){
+                  predictText.setVisibility(View.VISIBLE);
+                 for (Wood item: dataOffline){
+                     if(item.getId()==idDetected){
+                         predictText.setText(item.getDisplayName());
+                     }
+                 }
+              }
+              else{
+                  loadingDialog.showLoading();
+                checkImageQuality(bImage);
+              }
             }
         });
 
@@ -106,6 +156,7 @@ public class IdentifyFragment extends Fragment {
                 retakeBtn.setVisibility(View.INVISIBLE);
                 identifyBtn.setVisibility(View.INVISIBLE);
                 captureBtn.setVisibility(View.VISIBLE);
+                predictText.setVisibility(View.INVISIBLE);
             }
         });
         previewView = view.findViewById(R.id.viewFinder);
@@ -179,6 +230,7 @@ public class IdentifyFragment extends Fragment {
             } catch (FileNotFoundException e) {
                 e.printStackTrace();
             }
+            predictText.setVisibility(View.INVISIBLE);
             retakeBtn.setVisibility(View.VISIBLE);
             identifyBtn.setVisibility(View.VISIBLE);
             captureBtn.setVisibility(View.INVISIBLE);
@@ -200,7 +252,6 @@ public class IdentifyFragment extends Fragment {
 
         cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageCapture);
 
-
     }
 
 
@@ -216,46 +267,61 @@ public class IdentifyFragment extends Fragment {
                 retakeBtn.setVisibility(View.VISIBLE);
                 identifyBtn.setVisibility(View.VISIBLE);
                 picSelected = bImage;
-                checkImageQuality(bImage);
-
                 image.close();
             }
         });
     }
 
     private void checkImageQuality(Bitmap image) {
-        try {
-            ModelCheckwood model = ModelCheckwood.newInstance(getContext());
-
-            // Creates inputs for reference.
-            TensorBuffer inputFeature0 = TensorBuffer.createFixedSize(new int[]{1, 224, 224, 3}, DataType.FLOAT32);
-            ByteBuffer b= convertBitmapToByteBuffer(image);
-            inputFeature0.loadBuffer(b);
-
-
-            // Runs model inference and gets result.
-            ModelCheckwood.Outputs outputs = model.process(inputFeature0);
-            TensorBuffer outputFeature0 = outputs.getOutputFeature0AsTensorBuffer();
-
-            // Runs model inference and gets result.
-
-            float[] confidences = outputFeature0.getFloatArray();
-
-            int maxPos = 0;
-            float maxConfidence = 0;
-            for (int i = 0; i < confidences.length; i++) {
-                if (confidences[i] > maxConfidence) {
-                    maxConfidence = confidences[i];
-                    maxPos = i;
+        ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+        image.compress(Bitmap.CompressFormat.JPEG, 50, byteArrayOutputStream);
+        byte[] byteArray = byteArrayOutputStream .toByteArray();
+        String encoded = Base64.encodeToString(byteArray, Base64.DEFAULT);
+        checkImageApi(encoded);
+    }
+    private void checkImageApi(String base64){
+        final String[] result = {""};
+        ApiService.apiService.checkWoodImage((base64)).enqueue(new Callback<String>() {
+            @Override
+            public void onResponse(Call<String> call, Response<String> response) {
+                loadingDialog.hideLoading();
+                if(response.body().equals("0")){
+                   showAlert();
                 }
-                System.out.println((i) + "tỉ lệ" + confidences[i]);
+                else{
+                    classifyImage(picSelected,getContext());
+                    getWoodFromFirebase(idDetected,getView());
+                }
+                call.cancel();
+            }
+
+            @Override
+            public void onFailure(Call<String> call, Throwable t) {
+                loadingDialog.hideLoading();
+                System.out.println("asdf");
+            }
+        });
+
+    }
+
+    private void showAlert() {
+        AlertDialog.Builder alert= new AlertDialog.Builder(this.getContext());
+        alert.setTitle("Cảnh báo!");
+        alert.setMessage("Hình ảnh có thể không phải ảnh gỗ, bạn có muốn tiếp tục không?");
+        alert.setNeutralButton("Không", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialogInterface, int i) {
 
             }
-            // Releases model resources if no longer used.
-            model.close();
-        } catch (IOException e) {
-            // TODO Handle the exception
-        }
+        });
+        alert.setPositiveButton("Tiếp tục", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialogInterface, int i) {
+                classifyImage(picSelected,getContext());
+                getWoodFromFirebase(idDetected,getView());
+            }
+        });
+        alert.show();
     }
 
     private void classifyImage(Bitmap image, Context context) {
@@ -329,4 +395,23 @@ public class IdentifyFragment extends Fragment {
         matrix.postRotate(angle);
         return Bitmap.createBitmap(source, 0, 0, source.getWidth(), source.getHeight(), matrix, true);
     }
+
+    private void getWoodOffline() {
+        String json = null;
+        try {
+            InputStream inputStream = getContext().getAssets().open("data.json");
+            int size = inputStream.available();
+            byte[] bbuffer = new byte[size];
+            inputStream.read(bbuffer);
+            inputStream.close();
+            json = new String(bbuffer, StandardCharsets.UTF_8);
+            Gson gson = new Gson();
+            dataOffline = gson.fromJson(json, WOOD_TYPE);
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+    private static final Type WOOD_TYPE = new TypeToken<ArrayList<Wood>>() {
+    }.getType();
 }
