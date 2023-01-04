@@ -12,7 +12,7 @@ import retrofit2.http.Query;
 public interface ApiService {
     Gson gson =new GsonBuilder().setDateFormat("yyyy-MM-dd HH:mm:ss").create();
     ApiService apiService= new Retrofit.Builder()
-            .baseUrl("https://186c-34-72-103-117.ngrok.io/").addConverterFactory(GsonConverterFactory.create(gson))
+            .baseUrl("https://b4d3-34-86-138-115.ngrok.io/").addConverterFactory(GsonConverterFactory.create(gson))
             .build()
             .create(ApiService.class);
 

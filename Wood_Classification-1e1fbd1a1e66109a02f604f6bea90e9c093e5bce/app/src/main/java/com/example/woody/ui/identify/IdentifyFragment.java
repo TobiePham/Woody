@@ -311,7 +311,12 @@ public class IdentifyFragment extends Fragment{
         alert.setNeutralButton("Không", new DialogInterface.OnClickListener() {
             @Override
             public void onClick(DialogInterface dialogInterface, int i) {
-
+                previewView.setVisibility(View.VISIBLE);
+                imageView.setVisibility(View.INVISIBLE);
+                retakeBtn.setVisibility(View.INVISIBLE);
+                identifyBtn.setVisibility(View.INVISIBLE);
+                captureBtn.setVisibility(View.VISIBLE);
+                predictText.setVisibility(View.INVISIBLE);
             }
         });
         alert.setPositiveButton("Tiếp tục", new DialogInterface.OnClickListener() {
